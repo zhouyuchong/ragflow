@@ -76,16 +76,73 @@ class RAGFlowConnector:
         res = self._get("/datasets", {"page": page, "page_size": page_size, "orderby": orderby, "desc": desc, "id": id, "name": name})
         if not res:
             raise Exception([types.TextContent(type="text", text=res.get("Cannot process this operation."))])
+        
+        res = res.json()
+        if res.get("code") == 0:
+            return res
+        
+        return ""
+    
+    def list_documents(
+        self,
+        dataset_id: str,
+        page: int = 1,
+        page_size: int = 1000,
+        orderby: str = "create_time",
+        desc: bool = True,
+        keywords: str | None = None,
+        document_id: str | None = None,
+        document_name: str | None = None
+    ):
+        """
+        List documents under a specific dataset in RAGFlow.
+        """
+        path = f"/datasets/{dataset_id}/documents"
+        params = {
+            "page": page,
+            "page_size": page_size,
+            "orderby": orderby,
+            "desc": desc,
+            "keywords": keywords,
+            "id": document_id,
+            "name": document_name
+        }
+
+        # 删除值为 None 的参数，避免发送无意义的字段
+        params = {k: v for k, v in params.items() if v is not None}
+
+        res = self._get(path, params=params)
+        if not res:
+            raise Exception([types.TextContent(type="text", text="Cannot process this operation.")])
 
         res = res.json()
         if res.get("code") == 0:
+            return res
+        else:
+            raise Exception([types.TextContent(type="text", text=res.get("message", "Unknown error"))])
+
+    
+    def get_descriptions(self):
+        result_json = self.list_datasets()
+        if result_json.get("code") == 0:
             result_list = []
-            for data in res["data"]:
+            for data in result_json["data"]:
                 d = {"description": data["description"], "id": data["id"]}
                 result_list.append(json.dumps(d, ensure_ascii=False))
             return "\n".join(result_list)
         return ""
-
+            
+    def get_basic_info(self, dataset_id: str):
+        result_json = self.list_datasets()
+        result = None
+        print(result_json)
+        for data in result_json["data"]:
+            if data["tenant_id"] == dataset_id:
+                result = data
+                return result
+        return ""
+    
+        
     def retrieval(
         self, dataset_ids, document_ids=None, question="", page=1, page_size=30, similarity_threshold=0.2, vector_similarity_weight=0.3, top_k=1024, rerank_id: str | None = None, keyword: bool = False
     ):
@@ -175,12 +232,12 @@ def with_api_key(required=True):
 @app.list_tools()
 @with_api_key(required=True)
 async def list_tools(*, connector) -> list[types.Tool]:
-    dataset_description = connector.list_datasets()
-
+    dataset_description = connector.get_descriptions()
+    
     return [
         types.Tool(
             name="ragflow_retrieval",
-            description="Retrieve relevant chunks from the RAGFlow retrieve interface based on the question. You can optionally specify dataset_ids to search only specific datasets, or omit dataset_ids entirely to search across ALL available datasets. You can also optionally specify document_ids to search within specific documents. When dataset_ids is not provided or is empty, the system will automatically search across all available datasets. Below is the list of all available datasets, including their descriptions and IDs:"
+            description="Retrieve relevant chunks from the RAGFlow retrieve interface based on the question, using the specified dataset_ids and optionally document_ids. Below is the list of all available datasets, including their descriptions and IDs. If you're unsure which datasets are relevant to the question, simply pass all dataset IDs to the function."
             + dataset_description,
             inputSchema={
                 "type": "object",
@@ -188,18 +245,86 @@ async def list_tools(*, connector) -> list[types.Tool]:
                     "dataset_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional array of dataset IDs to search. If not provided or empty, all datasets will be searched."
                     },
                     "document_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional array of document IDs to search within."
                     },
-                    "question": {"type": "string", "description": "The question or query to search for."},
+                    "question": {"type": "string"},
                 },
-                "required": ["question"],
+                "required": ["dataset_ids", "question"],
             },
         ),
+        types.Tool(
+            name="get_basic_info",
+            description="Get basic information about the specified dataset, including its description, number of documents, and number of chunks and so on.\
+                This information can be used to determine the relevance of the dataset to a given question.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "string",
+                        "description": "The unique ID of the dataset to retrieve basic information for."
+                    }
+                },
+                "required": ["dataset_id"],
+            },
+        ),
+        types.Tool(
+            name="ragflow_list_knowledge_bases",
+            description="List all available knowledge bases (datasets) with their IDs and descriptions in ragflow",
+            inputSchema={
+                "type": "object",
+                "properties": {},  # 无输入参数
+                "required": [],  # 无必填参数
+            },
+        ),
+        types.Tool(
+            name="list_documents_in_dataset",
+            description=(
+                "List documents under a specific dataset. "
+                "Supports filtering by keywords, document ID, or document name. "
+                "Returns metadata about documents including their IDs, names, and other attributes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "dataset_id": {
+                        "type": "string",
+                        "description": "The unique ID of the dataset whose documents you want to list."
+                    },
+                    "keywords": {
+                        "type": "string",
+                        "description": "(Optional) Keyword to filter documents by name or content."
+                    },
+                    "document_id": {
+                        "type": "string",
+                        "description": "(Optional) Filter by a specific document ID."
+                    },
+                    "document_name": {
+                        "type": "string",
+                        "description": "(Optional) Filter by an exact document name."
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "(Optional) Page number for pagination. Default: 1"
+                    },
+                    "page_size": {
+                        "type": "integer",
+                        "description": "(Optional) Number of results per page. Default: 1000"
+                    },
+                    "orderby": {
+                        "type": "string",
+                        "description": "(Optional) Field to order by. Default: create_time"
+                    },
+                    "desc": {
+                        "type": "boolean",
+                        "description": "(Optional) Sort descending if true, ascending if false. Default: true"
+                    }
+                },
+                "required": ["dataset_id"],
+            },
+        )
     ]
 
 
@@ -208,29 +333,24 @@ async def list_tools(*, connector) -> list[types.Tool]:
 async def call_tool(name: str, arguments: dict, *, connector) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     if name == "ragflow_retrieval":
         document_ids = arguments.get("document_ids", [])
-        dataset_ids = arguments.get("dataset_ids", [])
-        
-        # If no dataset_ids provided or empty list, get all available dataset IDs
-        if not dataset_ids:
-            dataset_list_str = connector.list_datasets()
-            dataset_ids = []
-            
-            # Parse the dataset list to extract IDs
-            if dataset_list_str:
-                for line in dataset_list_str.strip().split('\n'):
-                    if line.strip():
-                        try:
-                            dataset_info = json.loads(line.strip())
-                            dataset_ids.append(dataset_info["id"])
-                        except (json.JSONDecodeError, KeyError):
-                            # Skip malformed lines
-                            continue
-        
         return connector.retrieval(
-            dataset_ids=dataset_ids,
+            dataset_ids=arguments["dataset_ids"],
             document_ids=document_ids,
             question=arguments["question"],
         )
+    
+    elif name == "list_documents_in_dataset":
+        return connector.list_documents(arguments["dataset_id"])
+    
+    elif name == "ragflow_list_knowledge_bases":
+        datasets = connector.list_datasets()
+        return [types.TextContent(type="text", text=json.dumps(datasets, ensure_ascii=False))]
+    
+    elif name == "get_basic_info":
+        dataset_id = arguments.get("dataset_id")
+        documents = connector.get_basic_info(dataset_id)
+        return [types.TextContent(type="text", text=json.dumps(documents, ensure_ascii=False))]
+
     raise ValueError(f"Tool not found: {name}")
 
 
@@ -454,3 +574,4 @@ if __name__ == "__main__":
             --mode=self-host --api-key=ragflow-xxxxx
     """
     main()
+
